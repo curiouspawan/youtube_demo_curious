@@ -1,0 +1,1559 @@
+/* bcwti
+ *
+ * Copyright (c) 2011 Parametric Technology Corporation (PTC). All Rights
+ * Reserved.
+ *
+ * This software is the confidential and proprietary information of PTC
+ * and is subject to the terms of a software license agreement. You shall
+ * not disclose such confidential information and shall use it only in accordance
+ * with the terms of the license agreement.
+ *
+ * ecwti
+ */
+package com.ptc.arbortext.windchill.publisher.payload;
+
+import java.beans.PropertyVetoException;
+import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import javax.xml.parsers.ParserConfigurationException;
+
+import org.w3c.dom.Comment;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.w3c.dom.Text;
+
+import wt.epm.EPMDocument;
+import wt.fc.EnumeratedType;
+import wt.fc.ObjectIdentifier;
+import wt.fc.ObjectReference;
+import wt.fc.ObjectToObjectLink;
+import wt.fc.Persistable;
+import wt.fc.PersistenceHelper;
+import wt.fc.ReferenceFactory;
+import wt.fc.WTReference;
+import wt.inf.container.WTContainer;
+import wt.inf.container.WTContainerRef;
+import wt.option.ChoiceMappable;
+import wt.option.ComplexExpressionData;
+import wt.option.ComplexExpressionData.Member;
+import wt.option.ExpressionAssignable;
+import wt.option.ExpressionDataHelper;
+import wt.org.WTUser;
+import wt.part.WTPart;
+import wt.part.WTPartUsageLink;
+import wt.preference.PreferenceClient;
+import wt.preference.PreferenceHelper;
+import wt.services.applicationcontext.implementation.DefaultServiceProvider;
+import wt.session.SessionHelper;
+import wt.type.TypedUtilityServiceHelper;
+import wt.util.WTException;
+import wt.wvs.WVSLogger;
+
+import com.ptc.arbortext.windchill.asps.services.ASPSMappingAPI;
+import com.ptc.arbortext.windchill.attset.AttributeSet;
+import com.ptc.arbortext.windchill.attset.EnumAttributeHandler;
+import com.ptc.arbortext.windchill.publisher.OptionConfig.ChoiceNode;
+import com.ptc.arbortext.windchill.publisher.OptionConfig.OptionNode;
+import com.ptc.arbortext.windchill.publisher.PubStrings;
+import com.ptc.arbortext.windchill.publisher.payload.attribute.ClassificationHelper;
+import com.ptc.arbortext.windchill.publisher.payload.attribute.GlobalEnumerationHelper;
+import com.ptc.arbortext.windchill.publisher.payload.manifest.ManifestItem2;
+import com.ptc.arbortext.windchill.publisher.payload.manifest.PayloadManifest2;
+import com.ptc.arbortext.windchill.publisher.payload.node.BaseNode;
+import com.ptc.arbortext.windchill.publisher.payload.node.ResourceNode;
+import com.ptc.arbortext.windchill.publisher.payload.postProcessor.ClassificationNode;
+import com.ptc.arbortext.windchill.publisher.payload.postProcessor.ContentStruct;
+import com.ptc.arbortext.windchill.publisher.payload.postProcessor.GeneratorPostProcessor;
+import com.ptc.arbortext.windchill.publisher.payload.postProcessor.NodePostProcessor;
+import com.ptc.arbortext.windchill.publisher.payload.postProcessor.NodeStruct;
+import com.ptc.arbortext.windchill.publisher.payload.postProcessor.ReferenceNodeStruct;
+import com.ptc.arbortext.windchill.publisher.payload.util.MetaDataBuffer;
+import com.ptc.arbortext.windchill.siscore.operation.CustomMetaDataSourceProvider;
+import com.ptc.arbortext.windchill.siscore.operation.PersistableMetaDataSource;
+import com.ptc.arbortext.windchill.siscore.operation.RawMetaDataSource;
+import com.ptc.arbortext.windchill.siscore.operation.RawMetaDataSource.Property;
+import com.ptc.arbortext.windchill.siscore.operation.RawMetaDataSource.PropertyValue;
+import com.ptc.arbortext.windchill.siscore.operation.SISMetaDataSource;
+import com.ptc.arbortext.windchill.translation.TranslationUtil;
+import com.ptc.core.meta.common.TypeIdentifier;
+import com.ptc.core.meta.common.impl.WCTypeInstanceIdentifier;
+import com.ptc.core.meta.server.TypeIdentifierUtility;
+import com.ptc.windchill.option.delegate.OptionSetDelegateResult;
+import com.ptc.windchill.option.expression.ExpressionHelper;
+import com.ptc.windchill.option.model.Choice;
+import com.ptc.windchill.option.model.Option;
+import com.ptc.windchill.option.model.OptionSet;
+import com.ptc.windchill.option.service.OptionHelper;
+import com.ptc.windchill.option.service.OptionsDelegateUtility;
+import com.ptc.wpcfg.logic.DefaultExpressionStringConverter;
+import com.ptc.wpcfg.logic.ExpressionStringConverter;
+
+/**
+ *
+ * <BR>
+ * <BR>
+ * <B>Supported API: </B>false <BR>
+ * <BR>
+ * <B>Extendable: </B>false
+ */
+public class MetadataHelper {
+    
+
+    private static final String JAVA_CONJUNCTION_OPERATOR = "&&";
+    private static final String JAVA_DISJUNCTION_OPERATOR = "||";
+    private static final String JAVA_NEGATION_OPERATOR = "!";
+
+	private static final WVSLogger logger = WVSLogger.getLogger(
+			MetadataHelper.class, WVSLogger.PUBLISH_GROUP);
+
+	private static Map<TypeIdentifier, String> customHooks = new HashMap<TypeIdentifier, String>();
+
+	public static Element createMetaDataHolder(Element parent) {
+		Element metaDataNode = parent.getOwnerDocument().createElement(PubStrings.METADATA_MARKUP);
+		parent.appendChild(metaDataNode);
+		return metaDataNode;
+
+	}
+    public static void addDocMetaData(Element contentElement, Persistable root,
+            Persistable describeDoc, String uri,
+            PayloadGenerator generator) throws WTException {
+        if (describeDoc == null) {
+            return;
+        }
+        List<Node> docMetaData = getPersistableMetaData(root, describeDoc,
+                null, uri, generator, contentElement.getOwnerDocument());
+        if (generator.getPayloadContext().getIncludeContentMetadata()) {
+            doAppendMetaData(createMetaDataHolder(contentElement), docMetaData, describeDoc, generator);
+        }
+    }
+
+    public static void addMetaDatas(List<NodeStruct> contents, boolean includeLink, PayloadGenerator generator) throws WTException{
+    	 if (contents == null || contents.size()<=0 ) {
+             return;
+         }
+
+    	 Map<NodeStruct, List<Node>> nodes = new HashMap<NodeStruct, List<Node>>();
+    	 getObjectsMetaData(contents, nodes, true, generator, false, generator.getAttributeSet());
+    	 for(NodeStruct ns : contents) {
+    		 if(ns.getMetaDataCacheFlag() && ns.getElement().getOwnerDocument() == generator.getXmlDOMDocument()) {
+    			 doAppendMetaDataInBuffer(ns.getElement(), nodes.get(ns), ns.getTarget(), generator.getMetaDataBuffer());
+    		 } else  {
+    			 doAppendMetaData(ns.getElement(), nodes.get(ns), ns.getTarget(), generator);
+    		 }
+    	 }
+    	 if(includeLink) {
+    		 Map<NodeStruct, List<Node>> linkNodes = new HashMap<NodeStruct, List<Node>>();
+        	 getLinkMetaData(contents, linkNodes, true, generator, false, generator.getAttributeSet());
+
+        	 for(NodeStruct ns : contents) {
+        		 if(ns.getLink() != null) {
+        			// control link element position;
+	        		 Element linkElement = ns.getElement().getParentNode().getOwnerDocument().createElement(PubStrings.METADATA_MARKUP);
+	        		 ns.getElement().getParentNode().insertBefore(linkElement, ns.getElement().getNextSibling());
+	        		 if(linkElement.getOwnerDocument() == generator.getXmlDOMDocument()){
+	        			 doAppendMetaDataInBuffer(linkElement, linkNodes.get(ns), ns.getLink(), generator.getMetaDataBuffer());
+	        		 } else {
+	        			 doAppendMetaData(linkElement, linkNodes.get(ns), ns.getLink(), generator);
+	        		 }
+        		 }
+        	 }
+    	 }
+    }
+
+    public static void addDocMetaDatas(Collection<NodeStruct> contents, PayloadGenerator generator) throws WTException {
+        if (contents == null || contents.size()<=0 ) {
+            return;
+        }
+
+        if (generator.getPayloadContext().getIncludeContentMetadata()) {
+        	 Map<NodeStruct, List<Node>> nodes = new HashMap<NodeStruct, List<Node>>();
+        	 getObjectsMetaData(contents, nodes, true, generator, false, generator.getAttributeSet());
+        	 for(NodeStruct ns : contents) {
+        		 doAppendMetaData(ns.getElement(), nodes.get(ns), ns.getTarget(), generator);
+        	 }
+        }
+
+        getManifestMetaDatas(contents, generator);
+    }
+
+    public static void addLinkMetaData(Element contentElement, WTPart root,
+            WTPartUsageLink linkToParent, PayloadGenerator generator)
+            throws WTException {
+        if (linkToParent == null) {
+            return;
+        }
+
+        List<Node> linkMetaData = getPersistableMetaData(root, linkToParent, null, null, generator, contentElement.getOwnerDocument());
+        doAppendMetaData(createMetaDataHolder(contentElement), linkMetaData, linkToParent, generator);
+    }
+
+    public static void addNavigationMetaData(Element contentElement,
+            WTPart part, PayloadGenerator generator, Document doc) throws WTException {
+        if (part == null) {
+            return;
+        }
+        else if (contentElement ==null){
+        	return;
+
+        }
+
+        ASPSMappingAPI am = new ASPSMappingAPI(doc);
+        try
+        {
+            Node mapNode = am.getMapping(part);
+            if (mapNode != null && mapNode.hasChildNodes()) {
+            	// Mapnode is the content of value node
+                Element propertyNode = doc.createElement(PubStrings.PROPERTY_MARKUP);
+                propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, "navigation");
+                List<Node> list = new ArrayList<Node>();
+                list.add(propertyNode);
+                doAppendMetaData(contentElement, list, am.getClass().getName(),"", part, generator);
+
+                Element valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+                propertyNode.appendChild(valueNode);
+
+                valueNode.appendChild(mapNode);
+            }
+        } catch (ParserConfigurationException pae) {
+            throw new WTException(pae);
+        } catch (PropertyVetoException pve) {
+            throw new WTException(pve);
+        }
+    }
+
+    public static void addPartMetaData(Element contentElement, WTPart root,
+            WTPart part, PayloadGenerator generator)
+            throws WTException {
+        if (part == null) {
+            return;
+        }
+
+        List<Node> partMetaData = getPersistableMetaData(root, part, null, null, generator, contentElement.getOwnerDocument());
+        String typename = TypeIdentifierUtility.getTypeIdentifier(part).getTypename();
+        doAppendMetaData(contentElement, partMetaData, typename, getMetadataId(part), part, generator);
+    }
+
+    public static void addPublishMetadata(Element contentElement, Persistable target, Map<String, Object> data, PayloadGenerator generator) throws WTException {
+    	if(data == null) {
+    		return;
+    	}
+
+    	List<Node> metadata = new ArrayList<Node>();
+    	for(Map.Entry<String, Object> entry : data.entrySet()){
+    		Element propertyNode = null;
+    		if(entry.getValue() instanceof String[]){
+    			propertyNode = createPropertyNode(contentElement.getOwnerDocument(), entry.getKey(), (String[])entry.getValue() );
+    		} else {
+    			propertyNode = createPropertyNode(contentElement.getOwnerDocument(), entry.getKey(), new String[]{(String)entry.getValue()} );
+    		}
+    		if(propertyNode != null){
+    			metadata.add(propertyNode);
+    		}
+    	}
+
+    	doAppendMetaData(contentElement, metadata, "SIM", null, target, generator);
+    }
+
+    public static void addContainerMetaData(Element contentElement, WTContainer container, PayloadGenerator generator)
+            throws WTException {
+
+        if (container == null) {
+            return;
+        }
+
+        Document xmlDOMDocument = contentElement.getOwnerDocument();
+        List<Node> containerMetaData = new ArrayList<Node>();
+        Element propertyNode = createPropertyNode(xmlDOMDocument, "name", new String[] { container
+                .getName() });
+        containerMetaData.add(propertyNode);
+
+        propertyNode = createPropertyNode(xmlDOMDocument, "orgName", new String[] { container
+                .getOrganization().getName() });
+        containerMetaData.add(propertyNode);
+
+        propertyNode = createPropertyNode(xmlDOMDocument, "description", new String[] { container
+                .getDescription() });
+        containerMetaData.add(propertyNode);
+
+        propertyNode = createPropertyNode(xmlDOMDocument, "owner", new String[] { container
+                .getOwner().getName() });
+        containerMetaData.add(propertyNode);
+
+        propertyNode = createPropertyNode(xmlDOMDocument, "createdDate", new String[] { container
+                .getPersistInfo().getCreateStamp().toString() });
+        containerMetaData.add(propertyNode);
+
+        propertyNode = createPropertyNode(xmlDOMDocument, "createdBy", new String[] { container
+                .getCreator().getName() });
+        containerMetaData.add(propertyNode);
+
+        propertyNode = createPropertyNode(xmlDOMDocument,
+                "preference.com.ptc.arbortext.windchill.siscore.translation.SourceLanguage",
+                new String[] { (String) PreferenceHelper.service.getValue(WTContainerRef.newWTContainerRef(container),
+                        "/com/ptc/arbortext/windchill/siscore/translation/SourceLanguage",
+                        PreferenceClient.WINDCHILL_CLIENT_NAME, (WTUser) SessionHelper.manager.getPrincipal()) });
+        containerMetaData.add(propertyNode);
+
+        String typeName = SerializerHelper.shortTypeName(container);
+        doAppendMetaData(contentElement, containerMetaData, typeName, getMetadataId(container), null, generator);
+    }
+
+    /**
+     * does the actual appending of the &lt;Metadata> elements to parentElement
+     *
+     * @param metaDataElement
+     *            - usually a &lt;Content> element in Pubstruct which will have Metadata appended
+     * @param metaData
+     *            - List&lt;Node> of &lt;Property>&lt;Value>; the actual metadata to append
+     * @param source
+     *            - WTPart, EPMDocuyment, or WTPartUsageLink indicating where the metadata came from.
+     */
+    public static Element doAppendMetaData(Element metaDataElement,List<Node> metaData, Persistable target, PayloadGenerator generator) {
+    	if(metaData == null || metaData.size()<=0) {
+    		if(metaDataElement.getParentNode()!= null){
+    			metaDataElement.getParentNode().removeChild(metaDataElement);
+    		}
+    		return null;
+    	}
+
+    	String source = TypeIdentifierUtility.getTypeIdentifier(target).getTypename();
+    	String id = getMetadataId(target);
+    	return doAppendMetaData(metaDataElement, metaData, source, id, target, generator);
+    }
+
+    public static Element doAppendMetaDataInBuffer(Element metaDataElement,
+    		List<Node> metaData,
+    		Persistable target,
+    		MetaDataBuffer dataBuffer) throws WTException {
+
+    	if(metaData == null || metaData.size()<=0) {
+    		if(metaDataElement.getParentNode()!= null){
+    			metaDataElement.getParentNode().removeChild(metaDataElement);
+    		}
+    		return null;
+    	}
+
+    	String source = TypeIdentifierUtility.getTypeIdentifier(target).getTypename();
+    	metaDataElement.setAttribute("source", source);
+
+    	String id = getMetadataId(target);
+        if(id!=null && id.length()>0) {
+        	metaDataElement.setAttribute(PubStrings.ID_MARKUP, id);
+        }
+
+        dataBuffer.putMetaData(metaDataElement, metaData);
+        return metaDataElement;
+    }
+
+    /**
+     * does the actual appending of the &lt;Metadata> elements to parentElement
+     *
+     * @param metaDataElement
+     *            - usually a &lt;Content> element in Pubstruct which will have Metadata appended
+     * @param metaData
+     *            - List&lt;Node> of &lt;Property>&lt;Value>; the actual metadata to append
+     * @param source
+     *            - WTPart, EPMDocuyment, or WTPartUsageLink indicating where the metadata came from.
+     *
+     * @param doc
+     *            - document for creating meta data element
+     *
+     */
+    public static Element doAppendMetaData(Element metaDataNode,
+            List<Node> metaData, String source,String id, Persistable target, PayloadGenerator generator) {
+        boolean hasMeta = false;
+        // Order is relevant since we are testing for redundant metadata
+        // Preferences is Part, then link, then doc metadata (doc metadata only
+        // exists on pubdocref)
+        if (metaData != null) {
+            metaDataNode.setAttribute("source", source);
+            if(id!=null && id.length()>0) {
+            	metaDataNode.setAttribute(PubStrings.ID_MARKUP, id);
+            }
+            for (Node n : metaData) {
+                hasMeta = true;
+                if(n.getParentNode() == null) {
+                	metaDataNode.appendChild(n);
+                } else {
+                	Node newN = n.cloneNode(true);
+                	if(target != null && target instanceof WTPart && n instanceof Element) {
+                		String ref = ((Element)n).getAttribute("ref");
+                		if("c".equals(ref)) {
+                			try {
+	                			NodeStruct ns = new ClassificationNode(((Element)n).getAttribute(PubStrings.TOKEN_MARKUP), target, null);
+	                			generator.getPostProcessor1(GeneratorPostProcessor.E_Type.Classification).add(ns);
+                			}catch(WTException ex) {
+                				logger.error(ex);
+                			}
+                		}
+                	}
+                	metaDataNode.appendChild(newN);
+                }
+
+            }
+            if (!hasMeta && metaDataNode.getParentNode()!= null){
+            	// clear meta data holder;
+            	metaDataNode.getParentNode().removeChild(metaDataNode);
+                return null;
+            }
+        }
+        return metaDataNode;
+    }
+
+    public static void getGroupATOChoices(List<NodeStruct> nss,
+    		PayloadGenerator generator) throws WTException {
+
+    }
+
+    /**
+     * Does the appending of a Related element to a parent element.
+     *
+     * @param parentElement
+     *            - The parent element to which the Related tag will be appended
+     * @param target
+     *            - The target attribute of the Related tag - Target is the source of the relationship.
+     * @param role
+     *            - The role attribute of the Related tag - Role of the relationship e.g. superseded.
+     * @return The created Related tag
+     */
+    public static Element doAppendRelated(Node parentElement, Persistable target, String role) {
+
+        String targetString = getMetadataId(target);
+        Element metaDataNode = parentElement.getOwnerDocument().createElement(PubStrings.RELATED_MARKUP);
+
+        metaDataNode.setAttribute(PubStrings.TARGET_ATT_MARKUP, targetString);
+
+        if (role != null && role.length() > 0) {
+            metaDataNode.setAttribute(PubStrings.ROLE_ATT_MARKUP, role);
+        }
+
+        parentElement.appendChild(metaDataNode);
+
+        return metaDataNode;
+    }
+
+
+    /**
+     * getATOChoices - The logic was copied from OptionsDelegateUtility.getChoiceNameMaps only it uses Iterator, and
+     * returns choice description not choice name.
+     *
+     * @param cm
+     *            - can be either WTPart (actually a soft-type) or WTPartUsageLink
+     * @return - a list of <Property><Name></Name><Value></Value></Property> suitable for including in <meta-data>
+     * @throws WTException
+     */
+
+    public static List<Node> getATOChoices(ChoiceMappable cm,
+            List<Node> nodeList, ManifestItem manifestEntry,
+            PayloadGenerator generator, Document doc) throws WTException {
+
+        nodeList = getATOExpressions(cm, nodeList, generator, doc);
+
+        Map<String, Set<String>>[] choiceMaps = OptionsDelegateUtility.getChoiceValueMaps(cm);
+        WTReference rootRef = null;
+
+        if (generator != null) {
+            Persistable root = generator.getPayloadContext().getEntryPersistable();
+            if (root != null && root instanceof WTPart) {
+                rootRef = new ReferenceFactory().getReference(root);
+            }
+        }
+        OptionSetDelegateResult delegateResult = OptionHelper.service.getAssignedOptionSet( new ReferenceFactory().getReference(cm), rootRef);
+        OptionSet optionset = delegateResult.getOptionSetValue(cm);
+        String optSetId = getOptionSetId(optionset);
+
+        Element propertyNode = doc.createElement(PubStrings.PROPERTY_MARKUP);
+        propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, PubStrings.EXPRESSION_TOKEN);
+
+        Element valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+        valueNode.setAttribute(PubStrings.CONTEXT_MARKUP, optSetId);
+        StringBuilder logicalExpression = new StringBuilder();
+        boolean hasValue = false;
+        if (choiceMaps != null && choiceMaps[0] != null) {
+            logicalExpression.append("(");
+            for (Iterator optionIter = choiceMaps[0].keySet().iterator(); optionIter.hasNext(); ) {
+                String optionid = optionIter.next().toString();
+                Option option = (Option) getPersistable(optionid);
+                String optionName = option.getName();
+
+                Set<String> choiceIds = choiceMaps[0].get(optionid);
+                Iterator choiceIter = choiceIds.iterator();
+                logicalExpression.append("(");
+                while (choiceIter.hasNext()) {
+
+                    Choice choice = (Choice) getPersistable(choiceIter.next().toString());
+                    String choiceName = choice.getName();
+                    logicalExpression.append(choiceName);
+                    if (choiceIter.hasNext()) {
+                        logicalExpression.append(JAVA_DISJUNCTION_OPERATOR);
+                    }
+                    else{
+                        logicalExpression.append(")");	
+                    }
+                    if (manifestEntry != null)
+                        manifestEntry.addMetaData(optionName, choiceName);
+                    hasValue = true;
+                }
+                if (optionIter.hasNext()) {
+                    // don't append for Last item...
+                    logicalExpression.append( JAVA_CONJUNCTION_OPERATOR );
+                }
+            }
+            logicalExpression.append(")");
+            if ( logicalExpression.length() !=0 ) {
+                Text nameValue = doc.createTextNode(logicalExpression.toString());
+                valueNode.appendChild(nameValue);
+                propertyNode.appendChild(valueNode);
+            }
+            if (hasValue) {
+                if (nodeList == null) {
+                    nodeList = new ArrayList<Node>();
+                }
+                nodeList.add(propertyNode);
+              }
+        }
+
+        return nodeList;
+    }
+    
+    private static List<Node> getATOExpressions(ChoiceMappable cm,
+            List<Node> nodeList, PayloadGenerator generator, Document doc) throws WTException {
+        //Adds expression information to metadata.
+        if(cm instanceof ExpressionAssignable) {
+            try {
+                WTReference rootRef = null;
+                // When a parts list is published alone without an information structure or publication
+                // structure, the root is a PartList. In this case, we want to keep the rootRef as null,
+                // because we cannot get an optionset from the PartList.
+                if (generator != null) {
+                    Persistable root = generator.getPayloadContext().getEntryPersistable();
+                    if (root != null && root instanceof WTPart) {
+                        rootRef = new ReferenceFactory().getReference(root);
+                    }
+                }
+
+                OptionSetDelegateResult delegateResult = OptionHelper.service.getAssignedOptionSet( new ReferenceFactory().getReference(cm), rootRef);
+                OptionSet optionset = delegateResult.getOptionSetValue(cm);
+                if(optionset != null && generator != null) {
+                    generator.getOptionSetColl().add(optionset);
+                }
+
+                ComplexExpressionData spec = ExpressionHelper.getAssignedExpression((ExpressionAssignable) cm, optionset);
+
+                if(spec != null) {
+                    Element propertyNode = doc
+                            .createElement(PubStrings.PROPERTY_MARKUP);
+                    propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, PubStrings.EXPRESSION_TOKEN);
+
+                    Element valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+                    valueNode.setAttribute(PubStrings.CONTEXT_MARKUP, getOptionSetId(optionset));
+                    String expressionStr = "";
+
+                    expressionStr = spec.getExpression();                    
+                    for(Member member : spec.getMembers()) {
+                        String id = member.getId();
+                        String expr  = "(" + member.getExpression() + ")";
+                        expressionStr = expressionStr.replaceAll(id, expr);
+                    }
+
+                    expressionStr = convertOperators(expressionStr);
+                    Text expValue = doc.createTextNode(expressionStr);
+                    valueNode.appendChild(expValue);
+                    propertyNode.appendChild(valueNode);
+
+                    if (nodeList == null)
+                        nodeList = new ArrayList<Node>();
+                    nodeList.add(propertyNode);
+                }
+            } catch (Exception e) {
+                throw new WTException(e);
+            }
+        }
+        
+        return nodeList;
+    }
+    
+    /**
+     * Converts expression string conjunction, disjunction, and negation operators
+     * to ones set in getBooleanJavaOperators().
+     * @param expressionStr
+     * @return updated expression string.
+     * @throws Exception - possibly a com.ptc.wpcfg.exparser.ParseException
+     */
+    private static String convertOperators(String expressionStr) throws Exception {
+        String [] operators = getBooleanJavaOperators();
+        String [] replacementOperators = ExpressionDataHelper.getBooleanOperators();
+        ExpressionStringConverter converter = new DefaultExpressionStringConverter(replacementOperators, operators, ".", false);
+        return converter.convertExpressionString(expressionStr, null, true);
+    }
+    
+    /**
+     * Retrieves standard Java Boolean operators as follows:
+     * the conjunction operator: <code>&&</code>
+     * the disjunction operator: <code>||</code>
+     * the negation operator: <code>!</code>
+     * 
+     * @return the array of the Java conjunction, disjunction, and negation operators.
+     */
+    public static String [] getBooleanJavaOperators() {
+        return new String [] {JAVA_CONJUNCTION_OPERATOR, JAVA_DISJUNCTION_OPERATOR, JAVA_NEGATION_OPERATOR};
+    }
+
+    /**
+     * Creates a unique id for optionSet based on its oid.
+     * @param optionSet
+     * @return String which is optionSet id like "_oset<<ida2a2>>"
+     */
+    public static String getOptionSetId(OptionSet optionSet) {
+            if(optionSet == null) {
+                return "";
+            }
+            String objID = PersistenceHelper.getObjectIdentifier(optionSet).getStringValue();
+            int colonIdx = objID.lastIndexOf(':');
+            // Less than 0 case probably wrong but never executed
+            String id = "_oset" + (colonIdx > 0 ? objID.substring(colonIdx + 1) : objID);
+            return id;
+    }
+
+    /**
+     * getPersistable was copied verbatum from OptionsDelagateUtility.java
+     *
+     * @param oidString
+     *            - oidString as returned from OptionsDelegateUtility class
+     * @return - the object that the oidString refers to
+     * @throws WTException
+     */
+    private static Persistable getPersistable(String oidString)
+            throws WTException {
+        ObjectIdentifier oid = ObjectIdentifier.newObjectIdentifier(oidString);
+        ObjectReference ref = ObjectReference.newObjectReference(oid);
+        return ref.getObject();
+    }
+
+    /**
+     * getPersistableMetaData gets all metaData, not just the IBA metadata (as was previously thought required). This
+     * includes: 'standard soft attributes', 'global soft attributes (IBAs), 'hard attributes' (modeled/annotated
+     * attributes), 'calculated attributes', or any other type of attribute. Attribute types are: LWCIBAAttDefinition,
+     * LWCHardAttDefinition, LWCLogicalAttDefinition, LWCNonPersistedAttDefinition, LWCFlexAttDefinition and
+     * LWCAttributeSetAttDefinition If all LWCHardAttDefinition and LWCLogicalAttDefinition are included, an exception
+     * is thrown indicating an attribute handler is needed.
+     *
+     * @param p
+     *            - persistable, may be WTPart or WTPartUsageLink
+     * @param metaData
+     *            - if not null, we'll append our Property/Values to this, else create
+     * @param manifestEntry
+     *            - (usually null) do both pubstruct and manifest metadata in the case of a dynamic document
+     *            
+     * @param doc           
+     * @return a <List> of <Property><Value> elements to be included in metadata
+     */
+    public static List<Node> getPersistableMetaData(Persistable root,
+            Persistable p, List<Node> metaData, String uri,
+            PayloadGenerator generator, Document doc) throws WTException {
+    	return getPersistableMetaData(root, p, metaData, uri, false, generator, doc, generator.getAttributeSet());
+    }
+
+    public static List<Node> getPersistableMetaData(Persistable root,
+            Persistable p, List<Node> metaData, String uri, boolean includeName,
+            PayloadGenerator generator, Document doc, AttributeSet attSet) throws WTException {
+    	if(p == null) {
+    		return metaData;
+    	}
+    	NodeStruct ns = null;
+    	if(uri == null) {
+    		ns = new NodeStruct(p, null, root);
+    	} else {
+    		ns = new ContentStruct(p, null, root);
+    		((ContentStruct)ns).setUri(uri);
+    	}
+
+    	ns.setOwnerDocument(doc);
+
+    	return getPersistableMetaData(ns, metaData, includeName, generator, attSet);
+    }
+
+    public static List<Node> getPersistableMetaData(NodeStruct ns, List<Node> metaData, boolean includeName,
+            PayloadGenerator generator, AttributeSet attSet) throws WTException {
+        if (metaData == null) {
+            metaData = new ArrayList<Node>();
+        }
+        getObjectMetaData(ns.getRoot(), ns.getTarget(), metaData, includeName, generator, ns.getOwnerDocument(), false, attSet);
+
+        ManifestItem manifestitem = getManifestItem(ns, generator);
+        //get option and choice information
+        if(ns.getTarget() instanceof ChoiceMappable){
+            getATOChoices((ChoiceMappable)ns.getTarget(), metaData, manifestitem, generator, ns.getOwnerDocument());
+        }
+        if(ns instanceof ContentStruct) {
+        	getManifestMetaData((ContentStruct)ns, generator);
+        }
+
+        return metaData;
+    }
+
+    public static String getMetadataId(Persistable p){
+        String ret = "";
+        if(p!=null){
+            ret = p.getClass().getSimpleName() + "_" + p.getPersistInfo().getObjectIdentifier().getId();
+        }
+        return ret;
+    }
+
+    public static Map<Persistable, List<Node>> getMixedTypePersistableMetaDatas(Persistable root,
+            Persistable[] ps, boolean includeName, PayloadGenerator generator, Document doc) throws WTException {
+
+    	Map<Persistable, List<Node>> metaDatas = new HashMap<Persistable, List<Node>>();
+    	if(ps == null || ps.length<=0) {
+    		return metaDatas;
+    	}
+
+    	HashSet<Persistable> allPs = new HashSet<Persistable>();
+    	for(int i=0; i<ps.length; i++) {
+    		allPs.add(ps[i]);
+    	}
+
+    	while(allPs.size()>0){
+    		TypeIdentifier ti = null;
+        	ArrayList<Persistable> sameTypePs = new ArrayList<Persistable>();
+    		for(Persistable p: allPs) {
+    			TypeIdentifier tii = TypedUtilityServiceHelper.service.getTypeIdentifier(p);
+    			if(ti == null){
+    				ti = tii;
+    				sameTypePs.add(p);
+    			} else if(ti==tii){
+    				sameTypePs.add(p);
+    			}
+    		}
+
+    		Map<Persistable, List<Node>> oneResult =  getPersistableMetaDatas(root,
+    				sameTypePs.toArray(new Persistable[0]), includeName, generator, doc);
+
+    		if(ps.length == sameTypePs.size()) {
+    			// one type only
+    			return oneResult;
+    		}
+
+    		metaDatas.putAll(oneResult);
+    		allPs.removeAll(sameTypePs);
+    	}
+
+        return metaDatas;
+    }
+    
+    public static Map<Persistable, List<Node>> getPersistableMetaDatasInManifest(Persistable[] ps, PayloadGenerator generator, Document doc) throws WTException {
+    	Map<Persistable, List<Node>> metaDatas = new HashMap<Persistable, List<Node>>();
+
+    	if(ps.length >0 ) {
+    		// use first node as root to avoid passing null though root is not used.
+    		getObjectsMetaData(ps[0], ps, metaDatas, true, generator, doc, false, generator.getManifestAttributeSet());
+    	}
+    	return metaDatas;
+    }
+
+    public static Map<Persistable, List<Node>> getPersistableMetaDatas(Persistable root,
+            Persistable[] ps, boolean includeName, PayloadGenerator generator, Document doc) throws WTException {
+
+    	Map<Persistable, List<Node>> metaDatas = new HashMap<Persistable, List<Node>>();
+
+    	getObjectsMetaData(root, ps, metaDatas, includeName, generator, doc, false, generator.getAttributeSet());
+
+    	for(Persistable p: ps) {
+	        //get option and choice information
+	        if(p instanceof ChoiceMappable){
+	            getATOChoices((ChoiceMappable)p, metaDatas.get(p), null, generator, doc);
+	        }
+    	}
+
+        return metaDatas;
+    }
+
+    private static ManifestItem getManifestItem(NodeStruct ns, PayloadGenerator generator) {
+    	if(ns == null || !(ns instanceof ContentStruct)) {
+    		return null;
+    	} else {
+    		return generator.getManifest().getItem(((ContentStruct)ns).getUri());
+    	}
+    }
+
+    private static void getLinkMetaData(List<NodeStruct> nodes, Map<NodeStruct, List<Node>> metaDataList,
+    		boolean includeName,
+    		PayloadGenerator generator,
+    		boolean includeBasicOnly,
+    		AttributeSet attrSet)
+    throws WTException {
+
+    	if(nodes == null || nodes.size()<=0) {
+    		return;
+    	}
+
+    	HashSet<Persistable> persistables = new HashSet<Persistable>();
+    	for(NodeStruct ns : nodes) {
+    		if(ns.getLink() != null && !persistables.contains(ns.getLink())) {
+    			persistables.add(ns.getLink());
+    		}
+    	}
+
+    	if(persistables.size()<=0){
+    		return;
+    	}
+
+    	Map<Persistable, Map<String, Map<String, Object>>> am =  attrSet.getAttributeValues(persistables.toArray(new Persistable[0]));
+
+    	for(NodeStruct ns : nodes) {
+    		if(ns.getLink() == null) {
+    			continue;
+    		}
+
+    		if(metaDataList.get(ns) == null) {
+    			metaDataList.put(ns, new ArrayList<Node>());
+    		}
+
+    		// fill each nodes
+    		getObjectMetaData(ns.getRoot(),
+    				ns.getLink(),
+    				metaDataList.get(ns),
+    				includeName,
+    				generator,
+    				ns.getOwnerDocument(),
+    				includeBasicOnly,
+    				am.get(ns.getLink()));
+
+    		// TODO: use batch mode
+    		if(ns.getLink() instanceof ChoiceMappable){
+ 	            getATOChoices((ChoiceMappable)ns.getLink(), metaDataList.get(ns), null, generator, ns.getElement().getOwnerDocument());
+ 	        }
+    	}
+    }
+
+
+    private static void getObjectsMetaData(Collection<NodeStruct> nodes, Map<NodeStruct, List<Node>> metaDataList,
+    		boolean includeName,
+    		PayloadGenerator generator,
+    		boolean includeBasicOnly,
+    		AttributeSet attrSet)
+    throws WTException {
+
+    	if(nodes == null || nodes.size()<=0) {
+    		return;
+    	}
+
+    	HashSet<Persistable> persistables = new HashSet<Persistable>();
+
+    	for(NodeStruct ns : nodes) {
+    		if(!persistables.contains(ns.getTarget())) {
+    			persistables.add(ns.getTarget());
+    		}
+    	}
+
+    	Map<Persistable, Map<String, Map<String, Object>>> am =  attrSet.getAttributeValues(persistables.toArray(new Persistable[0]));
+
+    	for(NodeStruct ns : nodes) {
+    		if(metaDataList.get(ns) == null) {
+    			metaDataList.put(ns, new ArrayList<Node>());
+    		}
+
+    		// fill each nodes
+    		getObjectMetaData(ns.getRoot(),
+    				ns.getTarget(),
+    				metaDataList.get(ns),
+    				includeName,
+    				generator,
+    				ns.getOwnerDocument(),
+    				includeBasicOnly,
+    				am.get(ns.getTarget()));
+
+    		// TODO: use batch mode
+    		if(ns.getTarget() instanceof ChoiceMappable){
+ 	            getATOChoices((ChoiceMappable)ns.getTarget(), metaDataList.get(ns), null, generator, ns.getElement().getOwnerDocument());
+ 	        }
+    	}
+    }
+
+    private static void getObjectsMetaData(Persistable root, Persistable[] ps,
+            Map<Persistable, List<Node>> metaDataList, boolean includeName, PayloadGenerator generator, Document doc, boolean includeBasicOnly, AttributeSet attrSet)
+    throws WTException {
+    	Map<Persistable, Map<String, Map<String, Object>>> am =  attrSet.getAttributeValues(ps);
+    	for(Persistable p : ps) {
+    		if(metaDataList.get(p) == null) {
+    			metaDataList.put(p, new ArrayList<Node>());
+    		}
+    		getObjectMetaData(root, p, metaDataList.get(p), includeName, generator, doc, includeBasicOnly, am.get(p));
+    	}
+    }
+
+    protected static void getObjectMetaData(Persistable root, Persistable p,
+            List<Node> metaDataList, boolean includeName, PayloadGenerator generator, Document doc, boolean includeBasicOnly, AttributeSet attrSet)
+            throws WTException {
+    	getObjectMetaData(root, p, metaDataList, includeName, generator, doc, includeBasicOnly, attrSet.getAttributeValues(p));
+    }
+
+    private static void getObjectMetaData(Persistable root, Persistable p,
+            List<Node> metaDataList, boolean includeName, PayloadGenerator generator, Document doc, boolean includeBasicOnly, Map<String, Map<String, Object>> attrsMaps)
+            throws WTException {
+    	if(attrsMaps == null) {return;}
+
+        Map<String, Object> attrs = attrsMaps.get(AttributeSet.DEFAULT_HANDLER);
+        if(attrs == null){return;}
+
+        for (String name : attrs.keySet()) {
+            if(!includeName){ // handle the case that name is not included
+                if ("name".equalsIgnoreCase(name) || "number".equals(name)) {
+                    // name and number have been exported;
+                    continue;
+                }
+            }
+
+            Object item = attrs.get(name);
+            // handle PTC_DD_EXTENDED_DOC_TYPE;
+            if (name.equals(PubStrings.PTC_DD_EXTENDED_DOC_TYPE)) {
+                processPubStructDDExtDocType(item, metaDataList, doc);
+                continue;
+            }
+
+            // handle referenced objects differently
+            if(item instanceof WCTypeInstanceIdentifier && !includeBasicOnly){
+                AttributeSerializer attSerializer = generator.getAttributeSerializer("reference");
+                if(attSerializer != null){
+                    Map<String, Object> attributes = new HashMap<String, Object>();
+                    ReferenceFactory rf = new ReferenceFactory();
+                    String refString = ((WCTypeInstanceIdentifier)item).getPersistenceIdentifier();
+                    if(refString != null){
+                        attributes.put(name, rf.getReference(refString));
+                        executeAttributeSerializer(root, p, metaDataList, generator,
+                                doc, attributes, attSerializer);
+                    }
+                    continue;
+                }
+                // otherwise the reference object is serialized as a string
+            }
+
+            Object[] items = parseValue(item);
+
+            if (items == null || items.length <= 0) {
+                continue;
+            }
+
+            Element propertyNode = doc.createElement(PubStrings.PROPERTY_MARKUP);
+            propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, name);
+
+            for (int i = 0; i < items.length; i++) {
+                if (items[i] == null || items[i].equals(""))
+                    continue;
+
+                String[] attrValues = generator.localizeAttribute(root, p, name, items[i].toString());
+                Element valueNode = createValueNodeForLocalizableAttribute(doc, attrValues);
+                propertyNode.appendChild(valueNode);
+            }
+            if (propertyNode.hasChildNodes()) {
+                metaDataList.add(propertyNode);
+            }
+        }
+
+        // enum type handler
+        processEnumeratedTypes(root, p, metaDataList, generator, doc, attrsMaps);
+        
+        // processor classification
+        ClassificationHelper.processClassificationTypes(root, p, metaDataList, generator, doc, attrsMaps);
+
+        GlobalEnumerationHelper.processGlobalEnumTypes(metaDataList, doc, attrsMaps);
+
+        if(includeBasicOnly){return;} // include basic is used for referenced objects.
+
+        // handle non-basic attributes, such as reference string
+        for(String keyName : attrsMaps.keySet()){
+            if(keyName.length()<=0 ) continue;
+
+            Map<String, Object> attributes = attrsMaps.get(keyName);
+            if(attributes == null || attributes.size()<=0){ continue; }
+
+            AttributeSerializer attSerializer = generator.getAttributeSerializer(keyName);
+            if(attSerializer != null){
+                executeAttributeSerializer(root, p, metaDataList, generator,
+                        doc, attributes, attSerializer);
+            }
+            else{
+                // ignored
+                logger.debug("handler " + keyName + " can't be found. Associated attributes are ignored.");
+            }
+        }
+    }
+
+    private static void processEnumeratedTypes(Persistable root, Persistable p,
+            List<Node> metaDataList, PayloadGenerator generator, Document doc,
+            Map<String, Map<String, Object>> attrsMaps) throws WTException {
+
+        Map<String, Object> attrs = attrsMaps.get(EnumAttributeHandler.HANDLER_NAME);
+
+        if(attrs!=null){
+            for (String name : attrs.keySet()) {
+                Object item = attrs.get(name);
+
+                Object[] items = parseValue(item);
+
+                if (items == null || items.length <= 0) {
+                    continue;
+                }
+
+                Element propertyNode = doc.createElement(PubStrings.PROPERTY_MARKUP);
+                propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, name);
+
+                for (int i = 0; i < items.length; i++) {
+                    if (items[i] == null || items[i].equals(""))
+                        continue;
+
+                    Element valueNode = null;
+                    String aVal = null; 
+                    if(items[i] instanceof EnumeratedType) {
+                        valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+                        valueNode.setAttribute(PubStrings.KEY_ATTR_MARKUP, items[i].toString());
+                        aVal = ((EnumeratedType)items[i]).getDisplay();
+                        valueNode.setTextContent(aVal);
+                    }
+                    else  {
+                        String[] attrValues = generator.localizeAttribute(root, p, name, items[i].toString());
+                        valueNode = MetadataHelper.createValueNodeForLocalizableAttribute(doc, attrValues);
+                    }
+
+                    propertyNode.appendChild(valueNode);
+                }
+                
+                if (propertyNode.hasChildNodes()) {
+                    metaDataList.add(propertyNode);
+                }
+            }
+        }
+    }
+
+    private static void processEnumeratedTypesForManifest(Persistable root, Persistable p,
+            ManifestItem manifest, PayloadGenerator generator,
+            Map<String, Map<String, Object>> attrsMaps) throws WTException {
+
+        if(manifest == null) {
+            return;
+        }
+        Map<String, Object> attrs = attrsMaps.get(EnumAttributeHandler.HANDLER_NAME);
+
+        if(attrs!=null){
+            for (String name : attrs.keySet()) {
+                Object item = attrs.get(name);
+
+                Object[] items = parseValue(item);
+
+                if (items == null || items.length <= 0) {
+                    continue;
+                }
+
+                for (int i = 0; i < items.length; i++) {
+                    if (items[i] == null || items[i].equals(""))
+                        continue;
+
+                    String aVal = null;
+                    if(items[i] instanceof EnumeratedType){
+                        aVal = ((EnumeratedType)items[i]).getDisplay();
+                        manifest.addEnumMetaData(name, items[i].toString(), aVal);
+                    }
+                    else  {
+                        String[] pair = generator.localizeAttribute(root, p, name, items[i].toString());
+                        aVal = pair[0];
+                        String transId = pair[1];
+                        String xmlLang = pair[2];
+                        manifest.addMetaData(name, aVal, transId, xmlLang);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void executeAttributeSerializer(Persistable root,
+            Persistable p, List<Node> metaDataList, PayloadGenerator generator,
+            Document doc, Map<String, Object> attributes,
+            AttributeSerializer attSerializer) throws WTException {
+
+        // call attribute serializer
+        Map<String, AttributeSerializer.AttributeEntry> addBackAttributes = attSerializer.serialize(attributes, p, root);
+
+        if(addBackAttributes == null || addBackAttributes.size()<=0) {
+            if(logger.isDebugEnabled()){
+                logger.debug("No addback attriute for object:" + p.toString());
+            }
+            return;
+        }
+
+        for (String key : addBackAttributes.keySet()) {
+            AttributeSerializer.AttributeEntry entry= addBackAttributes.get(key);
+
+            Map<String, String> nodeAttrs = entry.getAttributes();
+            Object[] items = null;
+
+            Element propertyNode = doc.createElement(PubStrings.PROPERTY_MARKUP);
+            if(entry.getValue() instanceof ReferenceNodeStruct){
+            	((ReferenceNodeStruct)entry.getValue()).setElement(propertyNode);
+            	propertyNode.setAttribute("ref", "t");
+            } else {
+            	items = parseValue(entry.getValue());
+            }
+
+            if ((items == null || items.length <= 0) && (nodeAttrs==null || nodeAttrs.size()<=0)) {
+                continue;
+            }
+
+            propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, key);
+
+            if(items !=null && items.length > 0){
+                for (int i = 0; i < items.length; i++) {
+                    if (items[i] == null || items[i].equals(""))
+                        continue;
+
+                    String[] attrValues = generator.localizeAttribute(root, p, key, items[i].toString());
+                    Element valueNode = createValueNodeForLocalizableAttribute(doc, attrValues);
+                    propertyNode.appendChild(valueNode);
+                    if(nodeAttrs != null){
+                        for (String attName : nodeAttrs.keySet()) {
+                            valueNode.setAttribute(attName, nodeAttrs.get(attName));
+                        }
+                    }
+                }
+            }
+            else{
+                // When no value is avaible, we create a node with empty value
+                Element valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+                propertyNode.appendChild(valueNode);
+                for (String attName : nodeAttrs.keySet()) {
+                    valueNode.setAttribute(attName, nodeAttrs.get(attName));
+                }
+            }
+
+            metaDataList.add(propertyNode);
+        }
+    }
+
+    public static Element createValueNodeForLocalizableAttribute(Document doc, String[] attrValues) {
+        Element valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+
+        String aVal = attrValues[0];
+        valueNode.setTextContent(aVal);
+
+        if (attrValues.length > 1) {
+            String transId = attrValues[1];
+            if (transId != null) {
+                valueNode.setAttribute(PubStrings.TRANSLATION_IDREF_MARKUP, transId);
+            }
+        }
+
+        if (attrValues.length > 2) {
+            String sourceLanguage = attrValues[2];
+            if (sourceLanguage != null) {
+                valueNode.setAttribute(PubStrings.XML_LANG_MARKUP, sourceLanguage);
+            }
+        }
+        
+        return valueNode;
+    }
+    
+    private static Element getMetaDataElement(Element parent, Persistable target) {
+    	if (parent.hasChildNodes()) {
+    		NodeList nodelist = parent.getElementsByTagName(PubStrings.METADATA_MARKUP);
+    		// The nodelist will never be null
+    		for (int i = 0; i < nodelist.getLength(); i++) {
+    			String idValue = ((Element)nodelist.item(i)).getAttribute(PubStrings.ID_MARKUP);
+    			// idValue is empty when the element doesn'thave the attribute
+    			if (!idValue.isEmpty() && idValue.equals(getMetadataId(target))) {
+    				return ((Element)nodelist.item(i));
+    			}
+    		}
+    	}
+
+    	return null;
+    }
+
+    public static List<Node> getReferenceMetaData(Persistable root, Persistable p, PayloadGenerator generator, Document doc)
+    throws WTException {
+        List<Node> metaData = new ArrayList<Node>();
+        getObjectMetaData(root, p, metaData, true, generator, doc, true, generator.getRefObjectsAttributeSet());
+        return metaData;
+    }
+
+    public static Map<NodeStruct, List<Node>> getReferenceMetaDatas(Collection<NodeStruct> nodes, PayloadGenerator generator)
+    throws WTException {
+        Map<NodeStruct, List<Node>> metaData = new HashMap<NodeStruct, List<Node>>();
+        getObjectsMetaData(nodes, metaData, true, generator, true, generator.getRefObjectsAttributeSet());
+        return metaData;
+    }
+
+    public static void getManifestMetaData(ContentStruct ns, PayloadGenerator generator)
+            throws WTException {
+    	ArrayList<NodeStruct> list = new ArrayList<NodeStruct>(1);
+    	list.add(ns);
+    	getManifestMetaDatas(list, generator);
+    }
+
+    public static void getManifestMetaDatas(Collection<NodeStruct> nodes, PayloadGenerator generator)
+            throws WTException {
+
+        if (nodes == null || nodes.size() <=0) {
+            return;
+        }
+
+        HashSet<Persistable> persistables = new HashSet<Persistable>();
+        for(NodeStruct ns : nodes) {
+        	if(!persistables.contains(ns.getTarget())){
+        		persistables.add(ns.getTarget());
+        	}
+        }
+
+        AttributeSet attrSet = generator.getManifestAttributeSet();
+
+    	Map<Persistable, Map<String, Map<String, Object>>> am =  attrSet.getAttributeValues(persistables.toArray(new Persistable[0]));
+
+    	MetaDataBuffer dataBuf = ((PayloadManifest2)generator.getManifest()).getMetaDataBuffer();
+    	Document doc = ((PayloadManifest2)generator.getManifest()).getDocument();
+    	for(NodeStruct ns : nodes) {
+
+    		ManifestItem2 manifestItem = (ManifestItem2)generator.getManifest().getItem(((ContentStruct)ns).getUri());
+    		List<Node> metaDataList = new ArrayList<Node>();
+    		
+    		Map<String, Map<String, Object>> attrsMaps = am.get(ns.getTarget());
+    		getObjectMetaData(ns.getRoot(), ns.getTarget(), metaDataList, true, generator, doc, false, attrsMaps);
+
+    		// In most cases, at here, the metadata element for the target won't exist. But if the
+    		// target appears at two different locations in an information structure or a publication
+    		// structure, there can be a metadata element already inserted by the previous appearance
+    		// of the target.
+    		Element metaDataElement = getMetaDataElement(manifestItem.getElement(), ns.getTarget());
+    		if (metaDataElement == null) {
+    			// insert
+    			metaDataElement = doc.createElement(PubStrings.METADATA_MARKUP);
+    			manifestItem.getElement().appendChild(metaDataElement);
+    			doAppendMetaDataInBuffer(metaDataElement, metaDataList, ns.getTarget(), dataBuf);
+    		}
+    	}
+    }
+
+    public static ResourceNode getManifestResouce(Persistable root, Persistable resource, PayloadGenerator generator)
+            throws WTException {
+
+        ResourceNode node = new ResourceNode();
+        BaseNode metaDataNode = node.addChildNode(PubStrings.METADATA_MARKUP);
+        metaDataNode.setAttribute(PubStrings.SOURCE_ATT_MARKUP, TypeIdentifierUtility.getTypeIdentifier(resource).getTypename());
+
+        AttributeSet attrSet = generator.getManifestAttributeSet();
+        Map<String, Map<String, Object>> attrsMaps = attrSet.getAttributeValues(resource);
+
+        // In manifest, we care basic attributes only
+        Map<String, Object> attrs = attrsMaps.get(AttributeSet.DEFAULT_HANDLER);
+        if(attrs == null){return node;}
+
+        for (String name : attrs.keySet()) {
+            Object[] items = parseValue(attrs.get(name));
+
+            if(items !=null && items.length>0){
+                String[] values = new String[items.length];
+                String[] transIds = new String[items.length];
+                String[] xmlLangAttributes = new String[items.length];
+                for (int i = 0; i < items.length; i++) {
+                    String propertyValue = SerializerHelper.propertyValueToString(items[i]);
+                    if (propertyValue == null || "".equals(propertyValue)) {
+                        continue;
+                    }
+
+                    String[] pair = generator.localizeAttribute(root, resource, name, propertyValue);
+                    values[i] = pair[0];
+                    transIds[i] = pair[1];
+                    xmlLangAttributes[i] = pair[2];
+                }
+
+                BaseNode propertyNode = metaDataNode.addPropertyChild(values, transIds, xmlLangAttributes);
+                propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, name);
+            }
+        }
+
+        return node;
+    }
+
+    /**
+     * parse the PTC_DD_EXTENDED_DOC_TYPE attribute.
+     *
+     * @param items
+     *            - value of the PTC_DD_EXTENDED_DOC_TYPE attribute.
+     * @param manifestEntry
+     *            - this will get the metadata
+     */
+    public static void processPubStructDDExtDocType(Object item,
+            List<Node> metaData, Document xmlDOMDocument) {
+
+        String[] sa = parseDDExtendedDocType(item);
+        if (sa == null) {
+            return;
+        }
+        for (int i = 0; i < sa.length; i++) {
+            String[] pairs = sa[i].split(",", -1);
+            Element propertyNode = xmlDOMDocument
+                    .createElement(PubStrings.PROPERTY_MARKUP);
+            propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, pairs[0]);
+            Element valueNode = xmlDOMDocument
+                    .createElement(PubStrings.VALUE_MARKUP);
+            propertyNode.appendChild(valueNode);
+            if(pairs.length >= 2 ){
+                valueNode.setTextContent(pairs[1]);
+            }
+            metaData.add(propertyNode);
+        }
+    }
+
+    /**
+     * parse the PTC_DD_EXTENDED_DOC_TYPE attribute for manifest.
+     *
+     * @param items
+     *            - value of the PTC_DD_EXTENDED_DOC_TYPE attribute.
+     * @param manifestEntry
+     *            - this will get the metadata
+     */
+    public static void processManifestDDExtDocType(Object item,
+            ManifestItem manifestEntry) {
+        if (manifestEntry == null) {
+            return;
+        }
+        String[] sa = parseDDExtendedDocType(item);
+        if (sa == null) {
+            return;
+        }
+
+        manifestEntry.addMetaData(PubStrings.PTC_DD_EXTENDED_DOC_TYPE, item.toString());
+        for (int i = 0; i < sa.length; i++) {
+            String[] pairs = sa[i].split(",", -1);
+            if(pairs.length>=2){
+                manifestEntry.addMetaData(pairs[0], pairs[1]);
+            }
+        }
+    }
+
+    private static Object[] parseValue(Object item) {
+        Object[] items = null;
+
+        if (item != null) {
+            if (item instanceof Object[]) {
+                items = (Object[]) item;
+
+            } else {
+                items = new Object[1];
+                items[0] = item;
+            }
+        }
+
+        return items;
+    }
+
+    private static String[] parseDDExtendedDocType(Object item) {
+        if (item == null) {
+            return null;
+        }
+
+        String aVal = item.toString();
+
+        return aVal.split("\\|");
+    }
+
+    public static Element createPropertyNode(Document doc, String token, String[] values) {
+        Element propertyNode = doc.createElement(PubStrings.PROPERTY_MARKUP);
+        propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, token);
+
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == null || values[i].equals(""))
+                continue;
+
+            Element valueNode = doc.createElement(PubStrings.VALUE_MARKUP);
+
+            valueNode.setTextContent(values[i]);
+            propertyNode.appendChild(valueNode);
+        }
+        return propertyNode;
+    }
+
+    public static void getCustomMetadata(Persistable roleB, ObjectToObjectLink link, boolean isLink, PayloadGenerator generator, Element curElement, Persistable root)
+    throws WTException{
+        String customDataFlag = generator.getPayloadContext().getParameter("DISABLECUSTOMDATA", null);
+
+        if(customDataFlag!= null && "yes".equalsIgnoreCase(customDataFlag)){
+            // custom data is disabled
+            logger.debug("custom data is disabled. ");
+            return;
+        }
+
+        Persistable target = null;
+        if(isLink){
+            target = link;
+        }
+        else{
+            target = roleB;
+        }
+
+        CustomMetaDataSourceProvider hook = findCustomHook(target);
+
+        if(hook == null) return;
+
+        List<SISMetaDataSource> metaDataSources = hook.getCustomDataSources(roleB, link, root, generator.getPayloadContext());
+        if(metaDataSources == null || metaDataSources.size()<=0){
+            return;
+        }
+        //
+        Document doc = curElement.getOwnerDocument();
+        Comment comment = doc.createComment("Custom meta data source");
+        curElement.appendChild(comment);
+
+        GeneratorPostProcessor processor = generator.getPostProcessor1(GeneratorPostProcessor.E_Type.Node);
+        if(processor == null) {
+        	processor = new NodePostProcessor(generator);
+        	generator.setPostProcessor1(GeneratorPostProcessor.E_Type.Node, processor);
+        }
+
+        for(SISMetaDataSource p : metaDataSources){
+            // Support persistable only for now
+            if(p instanceof PersistableMetaDataSource){
+                Persistable persistable =  ((PersistableMetaDataSource)p).getPersistable();
+                generator.getPublishUpdateManager().putPersistableWithAssociation(target, persistable);
+
+                NodeStruct ns = new NodeStruct(persistable, null, root);
+                ns.setParentElement(curElement);
+                processor.add(ns);
+
+                // gathering security labels if there is any;
+                generator.processSecurityLabel(persistable);
+            } else if(p instanceof RawMetaDataSource){
+            	RawMetaDataSource md = (RawMetaDataSource)p;
+            	// monitor in incremental manager
+            	List<Object> associates = md.getIncrementalList();
+            	if(associates != null && associates.size()>0) {
+	            	for(Object o : associates) {
+	            		if (o instanceof Persistable) {
+	            			generator.getPublishUpdateManager().putPersistableWithAssociation(target, (Persistable)o);
+	            		} else {
+	            			logger.debug(o);
+	            		}
+	            	}
+            	}
+            	List<Property> properties = md.getProperties();
+            	if(properties != null  && properties.size()>0) {
+	            	List<Node> nodes = new ArrayList<Node>();
+	            	for(Property property : properties) {
+	            		// create new node
+	            		Element propertyNode = curElement.getOwnerDocument().createElement(PubStrings.PROPERTY_MARKUP);
+	            		propertyNode.setAttribute(PubStrings.TOKEN_MARKUP, property.getToken());
+	            		if(property.getType() != null){
+	            			propertyNode.setAttribute(PubStrings.TYPE_ATTR_MARKUP, property.getType());
+	            		}
+	            		List<PropertyValue> values = property.getValues();
+	            		if(values == null || values.size() <=0) {
+	            			continue;
+	            		}
+
+	            		for(PropertyValue v : values) {
+	            			Element valueNode = curElement.getOwnerDocument().createElement(PubStrings.VALUE_MARKUP);
+	            			valueNode.setTextContent(v.getValue());
+	            			if(v.getKey() != null) {
+	            				valueNode.setAttribute(PubStrings.KEY_ATTR_MARKUP, v.getKey());
+	            			}
+	            			if(v.getToken() != null) {
+	            				valueNode.setAttribute(PubStrings.TOKEN_MARKUP, v.getToken());
+	            			}
+	            			propertyNode.appendChild(valueNode);
+	            		}
+
+	            		nodes.add(propertyNode);
+	            	}
+	            	doAppendMetaData(createMetaDataHolder(curElement), nodes, md.getSource(), md.getId(), null, generator);
+            	}
+            }
+        }
+    }
+
+    public static CustomMetaDataSourceProvider findCustomHook(Persistable target)
+            throws WTException {
+
+        CustomMetaDataSourceProvider ret = null;
+        TypeIdentifier ti = TypeIdentifierUtility.getTypeIdentifier(target);
+
+        if (!customHooks.containsKey(ti)) {
+
+            String typeName = ti.getTypename();
+            String[] nodes = typeName.split("\\|");
+            String[] allTypeIdentifierPaths = null;
+            if (nodes != null && nodes.length > 0) {
+                allTypeIdentifierPaths = new String[nodes.length];
+                if (nodes.length == 1) {
+                    allTypeIdentifierPaths[0] = nodes[0];
+                } else {
+                    StringBuffer buffer = new StringBuffer();
+                    for (int i = 0; i < nodes.length; i++) {
+                        buffer.append(nodes[i]);
+                        allTypeIdentifierPaths[i] = buffer.toString();
+                        buffer.append("|");
+                    }
+                }
+            }
+
+            String matchedPath = null;
+            for (int i = allTypeIdentifierPaths.length - 1; i >= 0; i--) {
+                try {
+                    ret = (CustomMetaDataSourceProvider) DefaultServiceProvider
+                            .getService(CustomMetaDataSourceProvider.class,
+                                    allTypeIdentifierPaths[i]);
+                } catch (Exception ex) {
+                    // ignore it here
+                }
+                if (ret != null) {
+                    matchedPath = allTypeIdentifierPaths[i];
+                    break;
+                }
+            }
+
+            customHooks.put(ti, matchedPath);
+        }
+
+        String validPath = customHooks.get(ti);
+        if (validPath != null) {
+            try {
+                ret = (CustomMetaDataSourceProvider) DefaultServiceProvider.getService(
+                        CustomMetaDataSourceProvider.class, validPath);
+            } catch (Exception ex) {
+                logger.warn(ex.getMessage());
+            }
+        }
+
+        if (logger.isDebugEnabled()) {
+            if (ret != null) {
+                logger.debug("Pubnode serializer--" + ti.getTypename() + ":::"
+                        + ret.getClass());
+            } else {
+                logger.debug("Pubnode serializer--" + ti.getTypename()
+                        + "::: no serializer");
+            }
+        }
+
+        return ret;
+    }
+    
+    public static  Timestamp getSourceUpdateTime(Persistable p) {
+        if (p instanceof EPMDocument) {
+            try {
+                Timestamp ts = TranslationUtil.getSourceUpdateTime((EPMDocument)p);
+                if (ts != null) {
+                    return ts;
+                }
+            } catch (WTException e) {
+                logger.debug("Invalid value for x-raomSrcUpdateTime in PTC_DD_EXTENDED_DOC_TYPE.");
+            }
+        }
+        return p.getPersistInfo().getUpdateStamp();
+    }
+}
